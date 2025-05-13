@@ -1,0 +1,70 @@
+import cv2
+import os
+import numpy as np
+from picamera2 import Picamera2
+import time
+
+# Change this for each symbol you capture
+symbol_name = 'face_recognition'
+save_dir = f'symbol_detector/training_data/{symbol_name}'
+os.makedirs(save_dir, exist_ok=True)
+
+max_images = 25
+count = 0
+show_message_frames = 30
+
+camera = Picamera2()
+camera.configure(camera.create_video_configuration())
+camera.start()
+time.sleep(0.1)
+
+message_counter = 0
+
+while True:
+    frame = camera.capture_array()
+    if frame is None:
+        print("Failed to capture frame")
+        continue
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 500:
+            x, y, w, h = cv2.boundingRect(cnt)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    if message_counter > 0:
+        cv2.putText(frame, "Photo taken!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (0, 255, 0), 2)
+        message_counter -= 1
+
+    display_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    cv2.imshow("Camera Preview", display_frame)
+    cv2.imshow("Threshold View", thresh)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+
+    if key == ord('s') and count < max_images:
+        biggest = max(contours, key=cv2.contourArea, default=None)
+        if biggest is not None and cv2.contourArea(biggest) > 500:
+            x, y, w, h = cv2.boundingRect(biggest)
+            roi = thresh[y:y+h, x:x+w]
+            roi = cv2.resize(roi, (64, 64))
+
+            filename = os.path.join(save_dir, f"{count}.png")
+            cv2.imwrite(filename, roi)
+
+            count += 1
+            message_counter = show_message_frames
+
+        if count >= max_images:
+            print(f"Reached limit of {max_images} images.")
+            break
+
+cv2.destroyAllWindows()
+camera.stop()

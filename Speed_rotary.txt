@@ -1,0 +1,126 @@
+import RPi.GPIO as GPIO
+import time
+import math
+
+# Motor Control Pins
+IN1, IN2, IN3, IN4 = 17, 18, 22, 23
+ENA, ENB = 24, 25  # Enable (PWM) pins
+
+# Encoder Pin
+ENCODER_PIN = 5  
+
+# Car and Encoder Parameters
+WHEEL_RADIUS_CM = 3.78
+PPR = 20   # Pulses per revolution
+WHEEL_CIRCUMFERENCE = 2 * math.pi * WHEEL_RADIUS_CM
+DISTANCE_PER_PULSE = WHEEL_CIRCUMFERENCE / PPR  # cm per pulse
+
+# Motor Speed (0 to 100)
+SPEED = 100  
+
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup([IN1, IN2, IN3, IN4, ENA, ENB], GPIO.OUT)
+GPIO.setup(ENCODER_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# Set up PWM for speed control
+pwmA = GPIO.PWM(ENA, 1000)  # 1 kHz frequency
+pwmB = GPIO.PWM(ENB, 1000)
+pwmA.start(SPEED)  # Set initial speed to 100%
+pwmB.start(SPEED)
+
+# Convert distance to pulses
+def calculate_required_pulses(distance_cm):
+    return int(abs(distance_cm) / DISTANCE_PER_PULSE)
+
+# Move Forward Function
+def move_forward(distance_cm, speed=SPEED):
+    pulse_count = 0
+    last_state = GPIO.input(ENCODER_PIN)
+    required_pulses = calculate_required_pulses(distance_cm)
+
+    print(f"Moving forward {distance_cm} cm at {speed}% speed...")
+
+    pwmA.ChangeDutyCycle(speed)
+    pwmB.ChangeDutyCycle(speed)
+
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+
+    while pulse_count < required_pulses:
+        current_state = GPIO.input(ENCODER_PIN)
+        if last_state == GPIO.HIGH and current_state == GPIO.LOW:
+            pulse_count += 1
+            print(f"Pulse detected! Count: {pulse_count}")
+
+        last_state = current_state
+        time.sleep(0.001)
+
+    stop_motors()
+
+# Move Backward Function
+def move_backward(distance_cm, speed=SPEED):
+    pulse_count = 0
+    last_state = GPIO.input(ENCODER_PIN)
+    required_pulses = calculate_required_pulses(distance_cm)
+
+    print(f"Moving backward {distance_cm} cm at {speed}% speed...")
+
+    pwmA.ChangeDutyCycle(speed)
+    pwmB.ChangeDutyCycle(speed)
+
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+
+    while pulse_count < required_pulses:
+        current_state = GPIO.input(ENCODER_PIN)
+        if last_state == GPIO.HIGH and current_state == GPIO.LOW:
+            pulse_count += 1
+            print(f"Pulse detected! Count: {pulse_count}")
+
+        last_state = current_state
+        time.sleep(0.001)
+
+    stop_motors()
+
+# Stop Function
+def stop_motors():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+    pwmA.ChangeDutyCycle(0)
+    pwmB.ChangeDutyCycle(0)
+    print("Motors stopped.")
+
+# Control Loop
+try:
+    while True:
+        try:
+            distance = float(input("Enter distance to move (cm), or 0 to quit: "))
+            if distance == 0:
+                stop_motors()
+                print("Exiting...")
+                break
+
+            speed = float(input("Enter speed (0-100%): "))  # User-defined speed
+            speed = max(0, min(100, speed))  # Clamp speed between 0 and 100
+
+            if distance > 0:
+                move_forward(distance, speed)
+            else:
+                move_backward(abs(distance), speed)
+
+            print(f"Moved {distance} cm at {speed}% speed")
+
+        except ValueError:
+            print("Invalid input. Enter a number.")
+
+finally:
+    pwmA.stop()
+    pwmB.stop()
+    GPIO.cleanup()

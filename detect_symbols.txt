@@ -1,0 +1,76 @@
+import cv2
+import joblib
+import numpy as np
+from skimage.feature import hog
+from picamera2 import Picamera2
+import time
+
+# Load trained SVM model
+model = joblib.load("symbol_detector/model/svm_hog_model.pkl")
+
+# Full label map for both symbols and shapes
+label_map = {
+    0: 'arrow_up',
+    1: 'arrow_down',
+    2: 'arrow_left',
+    3: 'arrow_right',
+    4: 'stop_hand',
+    5: 'face_recognition',
+    6: 'distance',
+    7: 'no_entry',
+    8: 'circle',
+    9: 'incomplete_circle',
+    10: 'triangle',
+    11: 'rectangle',
+    12: 'pentagon',
+    13: 'hexagon'
+}
+
+# Classify symbol or shape using HOG + SVM model
+def classify_symbol_or_shape(roi):
+    roi = cv2.resize(roi, (64, 64))
+    roi = cv2.GaussianBlur(roi, (3, 3), 0)
+    features = hog(roi, orientations=9, pixels_per_cell=(8, 8),
+                   cells_per_block=(2, 2), visualize=False)
+    prediction = model.predict([features])[0]
+    return label_map.get(prediction, "unknown")
+
+# Initialize Picamera2
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)})
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+
+print("[INFO] Detection running... Press 'q' to exit.")
+
+while True:
+    frame = picam2.capture_array()
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 300:
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = thresh[y:y+h, x:x+w]
+
+            label = classify_symbol_or_shape(roi)
+
+            # Draw label and rectangle on original frame
+            cv2.putText(frame, label, (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x+w, y+h),
+                          (0, 255, 0), 2)
+
+    cv2.imshow("Detection", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cv2.destroyAllWindows()
+picam2.stop()
+
+

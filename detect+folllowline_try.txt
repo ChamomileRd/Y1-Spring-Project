@@ -1,0 +1,237 @@
+import cv2
+import joblib
+import numpy as np
+from skimage.feature import hog
+from picamera2 import Picamera2
+import time
+import RPi.GPIO as GPIO
+
+# Load trained SVM model
+model = joblib.load("symbol_detector/model/svm_hog_model.pkl")
+
+# Full label map for both symbols and shapes
+label_map = {
+    0: 'arrow_up',
+    1: 'arrow_down',
+    2: 'arrow_left',
+    3: 'arrow_right',
+    4: 'stop_hand',
+    5: 'face_recognition',
+    6: 'distance',
+    7: 'no_entry',
+    8: 'circle',
+    9: 'incomplete_circle',
+    10: 'triangle',
+    11: 'rectangle',
+    12: 'pentagon',
+    13: 'hexagon'
+}
+
+def classify_symbol_or_shape(roi):
+    roi = cv2.resize(roi, (64, 64))
+    roi = cv2.GaussianBlur(roi, (3, 3), 0)
+    features = hog(roi, orientations=9, pixels_per_cell=(8, 8),
+                   cells_per_block=(2, 2), visualize=False)
+    prediction = model.predict([features])[0]
+    return label_map.get(prediction, "unknown")
+
+# GPIO Setup
+IN1 = 17
+IN2 = 18
+IN3 = 22
+IN4 = 23
+ENA = 24
+ENB = 25
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(IN1, GPIO.OUT)
+GPIO.setup(IN2, GPIO.OUT)
+GPIO.setup(IN3, GPIO.OUT)
+GPIO.setup(IN4, GPIO.OUT)
+GPIO.setup(ENA, GPIO.OUT)
+GPIO.setup(ENB, GPIO.OUT)
+
+# PWM Setup
+pwm_left = GPIO.PWM(ENA, 1000)
+pwm_right = GPIO.PWM(ENB, 1000)
+pwm_left.start(50)
+pwm_right.start(50)
+
+def set_speed(right_speed, left_speed):
+    pwm_left.ChangeDutyCycle(left_speed)
+    pwm_right.ChangeDutyCycle(right_speed)
+
+def move_forward():
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    
+def move_backward():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    set_speed(45, 45)
+    
+def move_left():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+
+def move_right():
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+
+def stop():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+    set_speed(0, 0)
+
+# Color ranges in HSV
+color_ranges = {
+    'yellow': ([20, 100, 100], [35, 255, 255]),
+    'green':  ([40, 80, 80],   [80, 255, 255]),
+    'red':    ([0, 120, 70],   [10, 255, 255]),
+    'blue':   ([100, 150, 0],  [140, 255, 255])
+}
+
+available_colors = list(color_ranges.keys())
+
+print("Available colors:", available_colors)
+selected_colors = []
+for i in range(2):
+    color = input(f"Select color {i+1} to follow (or press Enter to skip): ").lower()
+    if color in available_colors:
+        selected_colors.append(color)
+print("Selected colors:", selected_colors)
+
+# Initialize Picamera2
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)})
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+
+print("[INFO] Combined Detection + Line Following running... Press 'q' to exit.")
+
+while True:
+    frame = picam2.capture_array()
+    height, width, _ = frame.shape
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    # Symbol detection
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 300:
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = thresh[y:y+h, x:x+w]
+            label = classify_symbol_or_shape(roi)
+            cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+    # Line following
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    roi = hsv[height//2:, :]
+    direction = None
+    frame_center = width // 2
+    left_threshold = frame_center - 50
+    right_threshold = frame_center + 50
+
+    for color in selected_colors:
+        lower, upper = color_ranges[color]
+        lower = np.array(lower)
+        upper = np.array(upper)
+        mask = cv2.inRange(roi, lower, upper)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [c for c in contours if cv2.contourArea(c) > 500]
+
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            M = cv2.moments(largest_contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"]) + height//2
+                cv2.drawContours(frame, [largest_contour + np.array([[0, height//2]])], -1, (0, 255, 0), 2)
+                cv2.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+
+                if cx < left_threshold:
+                    direction = f"Move Left ({color})"
+                    set_speed(45, 55)
+                    move_left()
+                elif cx > right_threshold:
+                    direction = f"Move Right ({color})"
+                    set_speed(55, 45)
+                    move_right()
+                else:
+                    direction = f"Move Straight ({color})"
+                    set_speed(50, 50)
+                    move_forward()
+                break
+
+    if direction is None:
+        v_channel = roi[:, :, 2]
+        _, black_mask = cv2.threshold(v_channel, 50, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [c for c in contours if cv2.contourArea(c) > 500]
+
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            M = cv2.moments(largest_contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"]) + height//2
+                cv2.drawContours(frame, [largest_contour + np.array([[0, height//2]])], -1, (0, 255, 255), 2)
+                cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+
+                sharp_turn_threshold = 140  # pixels away from center
+
+                if cx < (frame_center - sharp_turn_threshold):
+                    direction = f"Sharp Left ({color})"
+                    stop()
+                    time.sleep(0.2)
+                    move_backward()
+                    time.sleep(0.4)
+                elif cx > (frame_center + sharp_turn_threshold):
+                    direction = f"Sharp Right ({color})"
+                    stop()
+                    time.sleep(0.2)
+                    move_backward()
+                    time.sleep(0.4)
+                elif cx < left_threshold:
+                    direction = f"Move Left ({color})"
+                    set_speed(45, 55)
+                    move_left()
+                elif cx > right_threshold:
+                    direction = f"Move Right ({color})"
+                    set_speed(55, 45)
+                    move_right()
+                else:
+                    direction = f"Move Straight ({color})"
+                    set_speed(50, 50)
+                    move_forward()
+            else:
+                stop()
+        else:
+            stop()
+
+    if direction:
+        cv2.putText(frame, direction, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    cv2.imshow("Combined Detection", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+stop()
+pwm_left.stop()
+pwm_right.stop()
+cv2.destroyAllWindows()
+picam2.stop()
+GPIO.cleanup()
+

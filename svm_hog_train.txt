@@ -1,0 +1,105 @@
+import os
+import cv2
+import numpy as np
+from sklearn import svm
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import pickle
+from skimage.feature import hog
+
+# Define your symbols and labels
+label_map = {
+    'arrow_up': 0,
+    'arrow_down': 1,
+    'arrow_left': 2,
+    'arrow_right': 3,
+    'stop_hand': 4,
+    'face_recognition': 5,
+    'distance': 6,
+    'no_entry': 7,
+    'circle': 8,
+    'incomplete_circle': 9,
+    'triangle': 10,
+    'rectangle': 11,
+    'pentagon': 12,
+    'hexagon': 13
+}
+
+data_dir = "symbol_detector/training_data"
+features = []
+labels = []
+
+print("[INFO] Starting data loading...")
+
+# Iterate over each symbol folder
+for symbol_name, label in label_map.items():
+    folder_path = os.path.join(data_dir, symbol_name)
+    if not os.path.isdir(folder_path):
+        print(f"[WARNING] Folder not found for {symbol_name}, skipping...")
+        continue
+
+    files = os.listdir(folder_path)
+    if not files:
+        print(f"[WARNING] No files found in {symbol_name} folder, skipping...")
+        continue
+
+    print(f"[INFO] Processing {len(files)} files in {symbol_name}...")
+
+    for filename in files:
+        gray_path = os.path.join(folder_path, filename)
+        if not os.path.isfile(gray_path):
+            print(f"[WARNING] Missing image file: {filename} in {symbol_name}, skipping.")
+            continue
+
+        # Load grayscale image
+        gray_img = cv2.imread(gray_path, cv2.IMREAD_GRAYSCALE)
+        if gray_img is None:
+            print(f"[ERROR] Failed to load image: {filename} in {symbol_name}")
+            continue
+
+        # Resize image to standard size
+        gray_resized = cv2.resize(gray_img, (64, 64))
+
+        # Extract HOG features
+        hog_features = hog(gray_resized, orientations=9, pixels_per_cell=(8, 8),
+                           cells_per_block=(2, 2), visualize=False)
+
+        # Append features and labels
+        features.append(hog_features)
+        labels.append(label)
+
+    print(f"[INFO] Finished processing {symbol_name}")
+
+# Check if any data was loaded
+if len(features) == 0:
+    print("[ERROR] No training data found. Check your folder structure and image files.")
+    exit()
+
+# Convert to numpy arrays
+features = np.array(features)
+labels = np.array(labels)
+
+print(f"[INFO] Loaded {len(features)} feature vectors.")
+
+# Split dataset
+X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
+print("[INFO] Dataset split into training and testing sets.")
+
+# Train SVM classifier
+print("[INFO] Training SVM classifier...")
+clf = svm.SVC(kernel='linear')
+clf.fit(X_train, y_train)
+print("[INFO] Training complete.")
+
+# Save the model to file
+model_path = "symbol_detector/model/svm_hog_model.pkl"
+os.makedirs(os.path.dirname(model_path), exist_ok=True)
+with open(model_path, "wb") as f:
+    pickle.dump(clf, f)
+print(f"[INFO] Model saved to {model_path}")
+
+# Evaluate the model
+print("[INFO] Evaluating model...")
+y_pred = clf.predict(X_test)
+print(classification_report(y_test, y_pred, target_names=list(label_map.keys())))
+
